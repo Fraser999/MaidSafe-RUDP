@@ -628,8 +628,49 @@ TEST_F(ManagedConnectionsTest, BEH_API_Remove) {
   EXPECT_TRUE(nodes_[0]->connection_lost_node_ids().empty());
 }
 
+class Routing {
+ public:
+  explicit Routing(ManagedConnections& mc) : managed_connections_(mc), receiver_(1), run_(false) {}
+
+  void StartReceiving() {
+    run_.store(true);
+    receiver_.service().post([this] { DoReceive(); });
+  }
+
+  void StopReceiving() {
+    run_.store(false);
+    managed_connections_.CancelPendingAsyncReceives();
+    receiver_.Stop();
+  }
+
+ private:
+  void DoReceive() {
+    if (!run_)
+      return;
+    auto message_future = managed_connections_.AsyncReceive();
+    try {
+      auto message = message_future.get();
+      LOG(kAlways) << "Routing received message " << count_++ << ": " << message.substr(0, 50);
+    }
+    catch (const std::exception&) {}
+    receiver_.service().post([this] { DoReceive(); });
+  }
+
+  ManagedConnections& managed_connections_;
+  AsioService receiver_;
+  std::atomic<bool> run_;
+  int count_{0};
+};
+
 TEST_F(ManagedConnectionsTest, BEH_API_SimpleSend) {
   ASSERT_TRUE(SetupNetwork(nodes_, bootstrap_endpoints_, 2));
+
+
+
+  auto routing = Routing{ *nodes_[1]->managed_connections() };
+  routing.StartReceiving();
+
+
 
   NodeId chosen_node;
   EXPECT_EQ(kSuccess,
@@ -690,6 +731,18 @@ TEST_F(ManagedConnectionsTest, BEH_API_SimpleSend) {
   ASSERT_EQ(static_cast<size_t>(kRepeatCount), peer_messages.size());
   for (auto peer_message : peer_messages)
     EXPECT_EQ(kMessage, peer_message);
+
+
+
+  routing.StopReceiving();
+  auto expected_broken_promise = nodes_[1]->managed_connections()->AsyncReceive();
+  nodes_.clear();
+  try {
+    expected_broken_promise.get();
+  }
+  catch (const std::future_error& e) {
+    EXPECT_EQ(e.code(), std::make_error_condition(std::future_errc::broken_promise));
+  }
 }
 
 TEST_F(ManagedConnectionsTest, FUNC_API_ManyTimesSimpleSend) {

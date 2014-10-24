@@ -20,7 +20,9 @@
 #define MAIDSAFE_RUDP_MANAGED_CONNECTIONS_H_
 
 #include <atomic>
+#include <deque>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -135,6 +137,9 @@ class ManagedConnections {
 
   unsigned GetActiveConnectionCount() const;
 
+  std::future<std::string> AsyncReceive();
+  void CancelPendingAsyncReceives();
+
  private:
   typedef std::shared_ptr<detail::Transport> TransportPtr;
   typedef std::map<NodeId, TransportPtr> ConnectionMap;
@@ -195,6 +200,8 @@ class ManagedConnections {
 
   std::string DebugString() const;
 
+  void HandleReceivedMessage(const std::string& message);
+
   AsioService asio_service_;
   std::mutex callback_mutex_;
   MessageReceivedFunctor message_received_functor_;
@@ -208,6 +215,9 @@ class ManagedConnections {
   mutable std::mutex mutex_;
   boost::asio::ip::address local_ip_;
   NatType nat_type_;
+  std::mutex receive_mutex_;
+  std::deque<std::string> received_messages_;
+  std::deque<std::promise<std::string>> async_receive_promises_;
 };
 
 }  // namespace rudp

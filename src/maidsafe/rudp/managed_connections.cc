@@ -23,6 +23,7 @@
 #include <iterator>
 #include <map>
 
+#include "maidsafe/common/error.h"
 #include "maidsafe/common/log.h"
 #include "maidsafe/common/utils.h"
 
@@ -104,7 +105,10 @@ ManagedConnections::ManagedConnections()
       idle_transports_(),
       mutex_(),
       local_ip_(),
-      nat_type_(NatType::kUnknown) {}
+      nat_type_(NatType::kUnknown),
+      receive_mutex_(),
+      received_messages_(),
+      async_receive_promises_() {}
 
 ManagedConnections::~ManagedConnections() {
   {
@@ -678,6 +682,8 @@ void ManagedConnections::OnMessageSlot(const std::string& message) {
     if (local_callback) {
       asio_service_.service().post([=] { local_callback(decrypted_message); });
     }
+
+    HandleReceivedMessage(decrypted_message);
   }
   catch (const std::exception& e) {
     LOG(kError) << "Failed to decrypt message: " << e.what();
@@ -830,6 +836,35 @@ std::string ManagedConnections::DebugString() const {
   s += "\n\n";
 
   return s;
+}
+
+std::future<std::string> ManagedConnections::AsyncReceive() {
+  std::promise<std::string> promise;
+  std::lock_guard<std::mutex> lock{ receive_mutex_ };
+  if (received_messages_.empty()) {
+    async_receive_promises_.push_back(std::move(promise));
+    return async_receive_promises_.back().get_future();
+  }
+
+  promise.set_value(received_messages_.front());
+  received_messages_.pop_front();
+  return promise.get_future();
+}
+
+void ManagedConnections::CancelPendingAsyncReceives() {
+  std::lock_guard<std::mutex> lock{ receive_mutex_ };
+  async_receive_promises_.clear();
+}
+
+void ManagedConnections::HandleReceivedMessage(const std::string& message) {
+  std::lock_guard<std::mutex> lock{ receive_mutex_ };
+  if (async_receive_promises_.empty()) {
+    // Possibly limit number of messages enqueued - drop this message if need be?
+    return received_messages_.push_back(message);
+  }
+
+  async_receive_promises_.front().set_value(message);
+  async_receive_promises_.pop_front();
 }
 
 }  // namespace rudp
